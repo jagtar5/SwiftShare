@@ -1,0 +1,10 @@
+{
+  "name": "SwiftShare",
+  "short_name": "SwiftShare",
+  "description": "Local WebRTC P2P sharing",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": []
+}
