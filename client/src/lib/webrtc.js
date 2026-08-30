@@ -329,9 +329,8 @@ async function seedFileToPeer(targetPeerId, fileId, fileBlob) {
         isSeed: true
     }));
     
-    const chunkSize = 16 * 1024;
+    const chunkSize = 64 * 1024;
     let offset = 0;
-    const fileReader = new FileReader();
     
     return new Promise((resolve) => {
         const fileReader = new FileReader();
@@ -524,7 +523,7 @@ export async function sendFile(targetPeerId, file) {
     
     if (targets.length === 0) return;
 
-    const chunkSize = 16 * 1024;
+    const chunkSize = 64 * 1024;
     let offset = 0;
     
     return new Promise((resolve) => {
