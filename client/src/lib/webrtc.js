@@ -216,7 +216,62 @@ async function handleIceCandidate(peerId, candidate) {
 export const incomingData = writable(null); // { type: 'text' | 'file', data: any, from: string, meta?: any, id: number }
 
 export const history = writable([]);
+export const transferProgress = writable({});
 const hostedFiles = new Map(); // fileId -> Blob/File
+
+let progressState = {}; // Internal state for speed calculation
+
+function updateProgress(id, fileName, type, progress, currentBytes = 0) {
+    const now = performance.now();
+    let speedStr = '';
+    
+    if (!progressState[id]) {
+        progressState[id] = { lastStoreUpdate: 0, lastBytes: 0, lastTime: now };
+    }
+    
+    const state = progressState[id];
+    
+    // Throttle UI updates to every 250ms to prevent app slowdown, or force update at 100%
+    if (progress >= 100 || now - state.lastStoreUpdate > 250) {
+        const timeDiff = (now - state.lastTime) / 1000;
+        
+        if (timeDiff > 0 && currentBytes > 0) {
+            const bytesDiff = currentBytes - state.lastBytes;
+            const bytesPerSec = Math.max(0, bytesDiff / timeDiff);
+            
+            if (bytesPerSec > 1024 * 1024) {
+                speedStr = (bytesPerSec / (1024 * 1024)).toFixed(1) + ' MB/s';
+            } else if (bytesPerSec > 1024) {
+                speedStr = (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+            } else {
+                speedStr = bytesPerSec.toFixed(0) + ' B/s';
+            }
+        }
+        
+        state.lastBytes = currentBytes;
+        state.lastTime = now;
+        state.lastStoreUpdate = now;
+
+        transferProgress.update(tp => {
+            if (progress >= 100) {
+                if (!tp[id] || !tp[id].done) {
+                    setTimeout(() => {
+                        transferProgress.update(current => {
+                            const next = { ...current };
+                            delete next[id];
+                            delete progressState[id];
+                            return next;
+                        });
+                    }, 2000);
+                }
+                tp[id] = { fileName, type, progress: 100, speed: speedStr || (tp[id]?.speed || ''), done: true };
+            } else {
+                tp[id] = { fileName, type, progress, speed: speedStr || (tp[id]?.speed || '') };
+            }
+            return tp;
+        });
+    }
+}
 
 let fileBuffer = [];
 let receivedBytes = 0;
@@ -293,6 +348,9 @@ async function seedFileToPeer(targetPeerId, fileId, fileBlob) {
                 return;
             }
             
+            const progress = Math.round((offset / fileBlob.size) * 100);
+            updateProgress(fileId, fileName, 'out', progress, offset);
+            
             const slice = fileBlob.slice(offset, offset + chunkSize);
             fileReader.readAsArrayBuffer(slice);
         };
@@ -308,6 +366,7 @@ async function seedFileToPeer(targetPeerId, fileId, fileBlob) {
                 if (offset < fileBlob.size) {
                     sendNextSlice();
                 } else {
+                    updateProgress(fileId, fileName, 'out', 100, offset);
                     resolve();
                 }
             } else {
@@ -378,6 +437,9 @@ function handleIncomingData(peerId, data) {
         
         fileBuffer.push(data);
         receivedBytes += data.byteLength;
+        
+        const progress = Math.round((receivedBytes / incomingFileMeta.fileSize) * 100);
+        updateProgress(incomingFileMeta.id, incomingFileMeta.fileName, 'in', progress, receivedBytes);
         
         if (receivedBytes >= incomingFileMeta.fileSize) {
             const blob = new Blob(fileBuffer, { type: incomingFileMeta.fileType });
@@ -482,6 +544,9 @@ export async function sendFile(targetPeerId, file) {
                 return;
             }
             
+            const progress = Math.round((offset / file.size) * 100);
+            updateProgress(fileId, file.name, 'out', progress, offset);
+            
             const slice = file.slice(offset, offset + chunkSize);
             fileReader.readAsArrayBuffer(slice);
         };
@@ -501,6 +566,7 @@ export async function sendFile(targetPeerId, file) {
             if (offset < file.size) {
                 sendNextSlice();
             } else {
+                updateProgress(fileId, file.name, 'out', 100, offset);
                 resolve();
             }
         };

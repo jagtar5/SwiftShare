@@ -10,6 +10,7 @@
         sendFile, 
         incomingData,
         history,
+        transferProgress,
         clearHistoryNetwork,
         requestFileNetwork
     } from '$lib/webrtc.js';
@@ -312,6 +313,36 @@
                     <span class="text-base font-bold text-[var(--text-secondary)]">Tap or Drop File</span>
                 </div>
                 
+                <!-- Active Transfers -->
+                {#if Object.keys($transferProgress).length > 0}
+                    <div class="space-y-4 mb-6">
+                        {#each Object.entries($transferProgress) as [id, tp] (id)}
+                            <div class="clay-raised rounded-2xl p-4 animate-fade-in-up">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">
+                                        {tp.type === 'in' ? 'Receiving' : 'Sending'}
+                                    </span>
+                                    <span class="text-xs font-bold text-[var(--text-primary)]">
+                                        {tp.progress}%
+                                    </span>
+                                </div>
+                                <div class="w-full bg-[var(--bg-color)] clay-pressed rounded-full h-3 overflow-hidden">
+                                    <div 
+                                        class="clay-primary h-full rounded-full transition-all duration-300 ease-out"
+                                        style="width: {tp.progress}%"
+                                    ></div>
+                                </div>
+                                <div class="mt-2 flex justify-between items-center text-xs text-[var(--text-primary)] font-medium">
+                                    <div class="truncate max-w-[70%]">{tp.fileName}</div>
+                                    {#if tp.speed}
+                                        <div class="text-[10px] text-[var(--text-secondary)] font-bold">{tp.speed}</div>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+
                 <!-- History -->
                 {#if filteredHistory.length > 0}
                     <div class="space-y-6 lg:h-full lg:max-h-[400px] lg:overflow-y-auto custom-scrollbar lg:pr-4">

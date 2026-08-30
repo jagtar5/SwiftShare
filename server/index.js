@@ -15,8 +15,13 @@ function broadcastToRoom(roomId, senderWs, message) {
   }
 }
 
-wss.on('connection', (ws) => {
-    const roomId = 'local-mesh'; 
+wss.on('connection', (ws, req) => {
+    // Extract the public IP address from the proxy headers (Railway).
+    // If no proxy header exists (e.g., testing locally on LAN), fallback to 'local-mesh'.
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const clientIp = forwardedFor ? forwardedFor.split(',')[0].trim() : 'local-mesh';
+    
+    const roomId = clientIp; 
     ws.roomId = roomId;
 
     ws.on('message', (message, isBinary) => {
