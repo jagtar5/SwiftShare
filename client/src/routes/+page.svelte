@@ -24,8 +24,9 @@
     let dragOver = $state(false);
     let selectedPeer = $state('general'); 
     
-    let isDarkMode = $state(false);
     let showInfo = $state(false);
+    let isDarkMode = $state(false);
+    let copiedId = $state(null);
 
     let filteredHistory = $derived($history.filter(item => {
         if (selectedPeer === 'general') {
@@ -268,7 +269,7 @@
                             class="flex flex-col items-center gap-4 transition-transform active:scale-95 outline-none focus:outline-none shrink-0"
                             onclick={() => selectedPeer = id}
                         >
-                            <div class="w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 {selectedPeer === id ? (peer.status === 'connected' ? 'clay-avatar-active scale-110' : 'clay-raised ring-4 ring-[var(--bg-primary)] ring-offset-4 ring-offset-[var(--bg-color)]') : 'clay-raised'}">
+                            <div class="w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 {selectedPeer === id ? 'clay-avatar-active scale-110' : 'clay-raised ring-4 ring-[var(--bg-primary)] ring-offset-4 ring-offset-[var(--bg-color)]'}">
                                 {#if peer.device === 'mobile'}
                                     <svg class="w-8 h-8 {selectedPeer === id ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -414,11 +415,19 @@
                                         <button 
                                             class="clay-raised w-14 h-14 rounded-full flex items-center justify-center text-[var(--text-secondary)] active:clay-pressed shrink-0 transition-all" 
                                             onclick={() => {
-                                                if (navigator.clipboard) navigator.clipboard.writeText(item.content);
+                                                if (navigator.clipboard) {
+                                                    navigator.clipboard.writeText(item.content);
+                                                    copiedId = item.id;
+                                                    setTimeout(() => { if (copiedId === item.id) copiedId = null; }, 2000);
+                                                }
                                             }}
                                             aria-label="Copy text"
                                         >
-                                            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                                            {#if copiedId === item.id}
+                                                <svg class="w-6 h-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                                            {:else}
+                                                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                                            {/if}
                                         </button>
                                     {:else if item.type === 'file'}
                                         <button 

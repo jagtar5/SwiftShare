@@ -9,7 +9,8 @@ export default defineConfig({
 		proxy: {
 			'/ws-signaling': {
 				target: 'ws://127.0.0.1:8080',
-				ws: true
+				ws: true,
+				xfwd: true
 			}
 		}
 	},

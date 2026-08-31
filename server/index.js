@@ -7,12 +7,22 @@ const rooms = new Map();
 
 function getClientAddress(req) {
   const forwardedFor = req.headers["x-forwarded-for"];
+  const realIp = req.headers["x-real-ip"];
+  const cfIp = req.headers["cf-connecting-ip"];
+  const flyIp = req.headers["fly-client-ip"];
+  const trueIp = req.headers["true-client-ip"];
+
   const firstForwardedAddress = Array.isArray(forwardedFor)
     ? forwardedFor[0]
     : forwardedFor?.split(",")[0];
 
-  const address = firstForwardedAddress?.trim() || req.socket.remoteAddress || "unknown";
-  return address.replace(/^::ffff:/, "");
+  const address = cfIp || flyIp || trueIp || realIp || firstForwardedAddress?.trim() || req.socket.remoteAddress || "unknown";
+  
+  let cleanAddress = address.replace(/^::ffff:/, "");
+  
+  console.log(`[IP DEBUG] Headers: CF=${cfIp||'none'} FLY=${flyIp||'none'} XFF=${forwardedFor||'none'} REAL=${realIp||'none'} Socket=${req.socket.remoteAddress} -> Resolved: ${cleanAddress}`);
+  
+  return cleanAddress;
 }
 
 function resolveRoomId(req, requestedRoomId) {
