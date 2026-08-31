@@ -12,7 +12,9 @@
         history,
         transferProgress,
         clearHistoryNetwork,
-        requestFileNetwork
+        requestFileNetwork,
+        turboMode,
+        cancelTransfer
     } from '$lib/webrtc.js';
     
     let { data } = $props();
@@ -72,8 +74,19 @@
         }
     });
 
+    const unsubscribeTurbo = turboMode.subscribe(val => {
+        if (typeof document !== 'undefined') {
+            if (val) {
+                document.body.classList.add('turbo-active');
+            } else {
+                document.body.classList.remove('turbo-active');
+            }
+        }
+    });
+
     onDestroy(() => {
         unsubscribe();
+        unsubscribeTurbo();
     });
 
     function handleSendText() {
@@ -135,7 +148,7 @@
             </h1>
             <div class="inline-flex items-center space-x-3 text-sm px-6 py-2.5 rounded-full clay-depressed font-medium text-[var(--text-secondary)]">
                 <div class={`w-2.5 h-2.5 rounded-full ${$connected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-400'}`}></div>
-                <span>{$connected ? 'Connected to local mesh' : 'Connecting...'}</span>
+                <span>{$connected ? 'Ready to share' : 'Connecting...'}</span>
             </div>
             {#if $localPeerId}
                 <div class="flex items-center gap-2">
@@ -155,6 +168,16 @@
 
         <!-- Toggles -->
         <div class="flex w-full lg:w-auto justify-end gap-6 shrink-0">
+            <button 
+                class="w-14 h-14 lg:w-16 lg:h-16 rounded-full clay-raised flex items-center justify-center transition-all outline-none active:clay-pressed { $turboMode ? 'text-rose-500 shadow-[var(--shadow-avatar-active)]' : 'text-[var(--text-secondary)]' }"
+                onclick={() => $turboMode = !$turboMode}
+                aria-label="Toggle Turbo Mode"
+                title="Toggle Turbo Mode (Fast ArrayBuffer Streaming)"
+            >
+                <svg class="w-6 h-6 lg:w-7 lg:h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+            </button>
             <button 
                 class="w-14 h-14 lg:w-16 lg:h-16 rounded-full clay-raised flex items-center justify-center text-[var(--text-secondary)] active:clay-pressed outline-none transition-all"
                 onclick={() => showInfo = !showInfo}
@@ -217,6 +240,7 @@
                         <li>By default, you are sending to <b>General</b> (Broadcast to everyone).</li>
                         <li>To send privately, tap a specific device from the Radar.</li>
                         <li>Type text or drag a file to instantly share it!</li>
+                        <li>Click the ⚡ <b>Turbo Toggle</b> to blast large files at maximum speed (desktop recommended).</li>
                     </ol>
                 </div>
             {/if}
@@ -322,9 +346,23 @@
                                     <span class="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">
                                         {tp.type === 'in' ? 'Receiving' : 'Sending'}
                                     </span>
-                                    <span class="text-xs font-bold text-[var(--text-primary)]">
-                                        {tp.progress}%
-                                    </span>
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-xs font-bold text-[var(--text-primary)]">
+                                            {tp.progress}%
+                                        </span>
+                                        {#if tp.progress < 100}
+                                            <button 
+                                                class="w-5 h-5 rounded-full clay-raised flex items-center justify-center text-rose-500 hover:text-rose-600 transition-colors active:clay-pressed outline-none"
+                                                onclick={() => cancelTransfer(id)}
+                                                title="Cancel Transfer"
+                                                aria-label="Cancel Transfer"
+                                            >
+                                                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                </svg>
+                                            </button>
+                                        {/if}
+                                    </div>
                                 </div>
                                 <div class="w-full bg-[var(--bg-color)] clay-pressed rounded-full h-3 overflow-hidden">
                                     <div 

@@ -1,8 +1,28 @@
 const WebSocket = require('ws');
+const crypto = require('crypto');
 const port = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port });
 
 const rooms = new Map();
+
+function getClientAddress(req) {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const firstForwardedAddress = Array.isArray(forwardedFor)
+    ? forwardedFor[0]
+    : forwardedFor?.split(",")[0];
+
+  const address = firstForwardedAddress?.trim() || req.socket.remoteAddress || "unknown";
+  return address.replace(/^::ffff:/, "");
+}
+
+function resolveRoomId(req, requestedRoomId) {
+    if (requestedRoomId !== 'local-mesh' && requestedRoomId !== 'nearby') {
+        return requestedRoomId;
+    }
+    const networkKey = getClientAddress(req);
+    const hash = crypto.createHash("sha256").update(networkKey).digest("hex").slice(0, 16);
+    return `local-mesh-${hash}`;
+}
 
 function broadcastToRoom(roomId, senderWs, message) {
   const room = rooms.get(roomId);
@@ -16,20 +36,16 @@ function broadcastToRoom(roomId, senderWs, message) {
 }
 
 wss.on('connection', (ws, req) => {
-    // Extract the public IP address from the proxy headers (Railway).
-    // If no proxy header exists (e.g., testing locally on LAN), fallback to 'local-mesh'.
-    const forwardedFor = req.headers['x-forwarded-for'];
-    const clientIp = forwardedFor ? forwardedFor.split(',')[0].trim() : 'local-mesh';
-    
-    const roomId = clientIp; 
-    ws.roomId = roomId;
-
     ws.on('message', (message, isBinary) => {
         if (!isBinary) {
             try {
                 const parsed = JSON.parse(message.toString());
                 
                 if (parsed.type === 'join') {
+                    const requestedRoom = parsed.room || 'local-mesh';
+                    const roomId = resolveRoomId(req, requestedRoom);
+                    ws.roomId = roomId;
+                    
                     let requestedId = parsed.id;
                     let room = rooms.get(roomId);
                     
@@ -71,12 +87,20 @@ wss.on('connection', (ws, req) => {
                 const room = rooms.get(ws.roomId);
                 
                 if (room && target) {
+                    // Strict peer validation: Ensure the target actually exists in THIS exact room.
+                    let targetPeer = null;
                     for (const peer of room) {
                         if (peer.peerId === target) {
-                            parsed.from = ws.peerId;
-                            peer.send(JSON.stringify(parsed));
+                            targetPeer = peer;
                             break;
                         }
+                    }
+                    
+                    if (targetPeer) {
+                        parsed.from = ws.peerId;
+                        targetPeer.send(JSON.stringify(parsed));
+                    } else {
+                        console.warn(`Blocked signal: Peer ${ws.peerId} tried to signal missing/external target ${target}`);
                     }
                 }
             } catch (err) {
@@ -86,7 +110,7 @@ wss.on('connection', (ws, req) => {
     });
     
     ws.on('close', () => {
-        if (ws.peerId) {
+        if (ws.peerId && ws.roomId) {
             const room = rooms.get(ws.roomId);
             if (room) {
                 room.delete(ws);

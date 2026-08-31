@@ -4,6 +4,21 @@ export const peers = writable(new Map());
 export const logs = writable([]);
 export const connected = writable(false);
 export const localPeerId = writable('');
+export const turboMode = writable(false);
+
+const cancelHooks = new Map();
+
+export function cancelTransfer(fileId) {
+    if (cancelHooks.has(fileId)) {
+        cancelHooks.get(fileId)();
+    }
+    const payload = JSON.stringify({ type: 'cancel-transfer', fileId });
+    get(peers).forEach(peer => {
+        if (peer.dataChannel && peer.dataChannel.readyState === 'open') {
+            peer.dataChannel.send(payload);
+        }
+    });
+}
 
 let ws;
 
@@ -329,51 +344,111 @@ async function seedFileToPeer(targetPeerId, fileId, fileBlob) {
         isSeed: true
     }));
     
-    const chunkSize = 64 * 1024;
+    const isTurbo = get(turboMode);
+    const chunkSize = isTurbo ? 256 * 1024 : 64 * 1024;
     let offset = 0;
     
-    return new Promise((resolve) => {
-        const fileReader = new FileReader();
-        
-        const sendNextSlice = () => {
-            if (channel.readyState !== 'open') {
-                resolve();
-                return;
-            }
-            
-            // Respect backpressure: wait if SCTP buffer is larger than 8MB
-            if (channel.bufferedAmount > 8 * 1024 * 1024) {
-                setTimeout(sendNextSlice, 10);
-                return;
-            }
-            
-            const progress = Math.round((offset / fileBlob.size) * 100);
-            updateProgress(fileId, fileName, 'out', progress, offset);
-            
-            const slice = fileBlob.slice(offset, offset + chunkSize);
-            fileReader.readAsArrayBuffer(slice);
-        };
-        
-        fileReader.onload = (e) => {
-            if (channel.readyState === 'open') {
-                try {
-                    channel.send(e.target.result);
-                } catch (err) {
-                    console.error("Data channel send error (seed):", err);
-                }
-                offset += e.target.result.byteLength;
-                if (offset < fileBlob.size) {
-                    sendNextSlice();
-                } else {
+    return new Promise(async (resolve) => {
+        let isCancelled = false;
+        cancelHooks.set(fileId, () => {
+            isCancelled = true;
+            transferProgress.update(tp => {
+                const next = { ...tp };
+                delete next[fileId];
+                delete progressState[fileId];
+                return next;
+            });
+            cancelHooks.delete(fileId);
+            history.update(h => h.filter(item => item.id !== fileId));
+            addLog(`Upload cancelled for ${fileName}`);
+        });
+
+        if (isTurbo) {
+            try {
+                const buffer = await fileBlob.arrayBuffer();
+                
+                const sendNextTurboSlice = () => {
+                    if (isCancelled || channel.readyState !== 'open') { resolve(); return; }
+                    
+                    if (channel.bufferedAmount > 8 * 1024 * 1024) {
+                        setTimeout(sendNextTurboSlice, 1);
+                        return;
+                    }
+                    
+                    while (offset < buffer.byteLength) {
+                        if (isCancelled || channel.readyState !== 'open') { resolve(); return; }
+                        
+                        const end = Math.min(offset + chunkSize, buffer.byteLength);
+                        const chunk = new Uint8Array(buffer, offset, end - offset);
+                        
+                        try {
+                            channel.send(chunk);
+                        } catch (err) {
+                            console.error("Turbo Data channel send error:", err);
+                        }
+                        
+                        offset += chunk.byteLength;
+                        
+                        const progress = Math.round((offset / fileBlob.size) * 100);
+                        updateProgress(fileId, fileName, 'out', progress, offset);
+                        
+                        if (channel.bufferedAmount > 8 * 1024 * 1024) {
+                            setTimeout(sendNextTurboSlice, 1);
+                            return;
+                        }
+                    }
+                    
                     updateProgress(fileId, fileName, 'out', 100, offset);
                     resolve();
-                }
-            } else {
+                };
+                
+                sendNextTurboSlice();
+            } catch (err) {
+                console.error("Turbo arrayBuffer error:", err);
                 resolve();
             }
-        };
-        
-        sendNextSlice();
+        } else {
+            const fileReader = new FileReader();
+            
+            const sendNextSlice = () => {
+                if (isCancelled || channel.readyState !== 'open') {
+                    resolve();
+                    return;
+                }
+                
+                if (channel.bufferedAmount > 8 * 1024 * 1024) {
+                    setTimeout(sendNextSlice, 10);
+                    return;
+                }
+                
+                const progress = Math.round((offset / fileBlob.size) * 100);
+                updateProgress(fileId, fileName, 'out', progress, offset);
+                
+                const slice = fileBlob.slice(offset, offset + chunkSize);
+                fileReader.readAsArrayBuffer(slice);
+            };
+            
+            fileReader.onload = (e) => {
+                if (channel.readyState === 'open') {
+                    try {
+                        channel.send(e.target.result);
+                    } catch (err) {
+                        console.error("Data channel send error (seed):", err);
+                    }
+                    offset += e.target.result.byteLength;
+                    if (offset < fileBlob.size) {
+                        setTimeout(sendNextSlice, 2); // Maintain sweet spot capacity
+                    } else {
+                        updateProgress(fileId, fileName, 'out', 100, offset);
+                        resolve();
+                    }
+                } else {
+                    resolve();
+                }
+            };
+            
+            sendNextSlice();
+        }
     });
 }
 
@@ -384,6 +459,10 @@ function handleIncomingData(peerId, data) {
             if (parsed.type === 'clear-history') {
                 history.set([]);
                 hostedFiles.clear();
+            } else if (parsed.type === 'cancel-transfer') {
+                if (cancelHooks.has(parsed.fileId)) {
+                    cancelHooks.get(parsed.fileId)();
+                }
             } else if (parsed.type === 'sync-request') {
                 const currentHistory = get(history);
                 if (currentHistory.length > 0) {
@@ -415,6 +494,22 @@ function handleIncomingData(peerId, data) {
                 incomingFileMeta = parsed;
                 fileBuffer = [];
                 receivedBytes = 0;
+                
+                cancelHooks.set(parsed.id, () => {
+                    fileBuffer = [];
+                    receivedBytes = 0;
+                    incomingFileMeta = null;
+                    transferProgress.update(tp => {
+                        const next = { ...tp };
+                        delete next[parsed.id];
+                        delete progressState[parsed.id];
+                        return next;
+                    });
+                    cancelHooks.delete(parsed.id);
+                    history.update(h => h.filter(item => item.id !== parsed.id));
+                    addLog(`Download cancelled for ${parsed.fileName}`);
+                });
+                
                 addLog(`Receiving file: ${parsed.fileName} (${parsed.fileSize} bytes)`);
             } else if (parsed.type === 'text') {
                 history.update(h => [{ 
@@ -523,53 +618,125 @@ export async function sendFile(targetPeerId, file) {
     
     if (targets.length === 0) return;
 
-    const chunkSize = 64 * 1024;
+    const isTurbo = get(turboMode);
+    const chunkSize = isTurbo ? 256 * 1024 : 64 * 1024;
     let offset = 0;
     
-    return new Promise((resolve) => {
-        const fileReader = new FileReader();
-        
-        const sendNextSlice = () => {
-            let maxBuffered = 0;
-            for (const p of targets) {
-                if (p.dataChannel && p.dataChannel.readyState === 'open') {
-                    maxBuffered = Math.max(maxBuffered, p.dataChannel.bufferedAmount);
-                }
-            }
-            
-            // Wait if buffer exceeds 8MB to prevent WebRTC crash
-            if (maxBuffered > 8 * 1024 * 1024) {
-                setTimeout(sendNextSlice, 10);
-                return;
-            }
-            
-            const progress = Math.round((offset / file.size) * 100);
-            updateProgress(fileId, file.name, 'out', progress, offset);
-            
-            const slice = file.slice(offset, offset + chunkSize);
-            fileReader.readAsArrayBuffer(slice);
-        };
-        
-        fileReader.onload = (e) => {
-            for (const p of targets) {
-                if (p.dataChannel && p.dataChannel.readyState === 'open') {
-                    try {
-                        p.dataChannel.send(e.target.result);
-                    } catch (err) {
-                        console.error("Data channel send error:", err);
+    return new Promise(async (resolve) => {
+        let isCancelled = false;
+        cancelHooks.set(fileId, () => {
+            isCancelled = true;
+            transferProgress.update(tp => {
+                const next = { ...tp };
+                delete next[fileId];
+                delete progressState[fileId];
+                return next;
+            });
+            cancelHooks.delete(fileId);
+            history.update(h => h.filter(item => item.id !== fileId));
+            addLog(`Upload cancelled for ${file.name}`);
+        });
+
+        if (isTurbo) {
+            try {
+                const buffer = await file.arrayBuffer();
+                
+                const sendNextTurboSlice = () => {
+                    if (isCancelled) { resolve(); return; }
+                    let maxBuffered = 0;
+                    for (const p of targets) {
+                        if (p.dataChannel && p.dataChannel.readyState === 'open') {
+                            maxBuffered = Math.max(maxBuffered, p.dataChannel.bufferedAmount);
+                        }
                     }
-                }
-            }
-            offset += e.target.result.byteLength;
-            
-            if (offset < file.size) {
-                sendNextSlice();
-            } else {
-                updateProgress(fileId, file.name, 'out', 100, offset);
+                    
+                    if (maxBuffered > 8 * 1024 * 1024) {
+                        setTimeout(sendNextTurboSlice, 1);
+                        return;
+                    }
+                    
+                    while (offset < buffer.byteLength) {
+                        if (isCancelled) { resolve(); return; }
+                        const end = Math.min(offset + chunkSize, buffer.byteLength);
+                        const chunk = new Uint8Array(buffer, offset, end - offset);
+                        
+                        for (const p of targets) {
+                            if (p.dataChannel && p.dataChannel.readyState === 'open') {
+                                try { p.dataChannel.send(chunk); } catch (err) {}
+                            }
+                        }
+                        
+                        offset += chunk.byteLength;
+                        const progress = Math.round((offset / file.size) * 100);
+                        updateProgress(fileId, file.name, 'out', progress, offset);
+                        
+                        maxBuffered = 0;
+                        for (const p of targets) {
+                            if (p.dataChannel && p.dataChannel.readyState === 'open') {
+                                maxBuffered = Math.max(maxBuffered, p.dataChannel.bufferedAmount);
+                            }
+                        }
+                        
+                        if (maxBuffered > 8 * 1024 * 1024) {
+                            setTimeout(sendNextTurboSlice, 1);
+                            return;
+                        }
+                    }
+                    
+                    updateProgress(fileId, file.name, 'out', 100, offset);
+                    resolve();
+                };
+                
+                sendNextTurboSlice();
+            } catch (err) {
+                console.error("Turbo arrayBuffer error:", err);
                 resolve();
             }
-        };
-        
-        sendNextSlice();
+        } else {
+            const fileReader = new FileReader();
+            
+            const sendNextSlice = () => {
+                if (isCancelled) { resolve(); return; }
+                let maxBuffered = 0;
+                for (const p of targets) {
+                    if (p.dataChannel && p.dataChannel.readyState === 'open') {
+                        maxBuffered = Math.max(maxBuffered, p.dataChannel.bufferedAmount);
+                    }
+                }
+                
+                if (maxBuffered > 8 * 1024 * 1024) {
+                    setTimeout(sendNextSlice, 10);
+                    return;
+                }
+                
+                const progress = Math.round((offset / file.size) * 100);
+                updateProgress(fileId, file.name, 'out', progress, offset);
+                
+                const slice = file.slice(offset, offset + chunkSize);
+                fileReader.readAsArrayBuffer(slice);
+            };
+            
+            fileReader.onload = (e) => {
+                for (const p of targets) {
+                    if (p.dataChannel && p.dataChannel.readyState === 'open') {
+                        try {
+                            p.dataChannel.send(e.target.result);
+                        } catch (err) {
+                            console.error("Data channel send error:", err);
+                        }
+                    }
+                }
+                offset += e.target.result.byteLength;
+                
+                if (offset < file.size) {
+                    setTimeout(sendNextSlice, 2); // Maintain sweet spot capacity
+                } else {
+                    updateProgress(fileId, file.name, 'out', 100, offset);
+                    resolve();
+                }
+            };
+            
+            sendNextSlice();
+        }
     });
 }
